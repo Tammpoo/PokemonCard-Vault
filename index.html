@@ -338,6 +338,7 @@
         <input type="number" id="fQtyRim" step="1" min="0">
       </div>
     </div>
+    <div class="hint">Venduta e rimasta sono collegate automaticamente ad acquistata: modificane una, l'altra si aggiorna da sola.</div>
     <div class="field">
       <label>Valore attuale / pezzo (€)</label>
       <input type="number" id="fValore" step="0.01">
@@ -717,9 +718,44 @@
     if(e.target.files[0]) importBackup(e.target.files[0]);
     e.target.value = '';
   });
-  ['fQtyRim','fValore','fSpesa','fVenditeLog'].forEach(id=>{
+  ['fValore','fSpesa','fVenditeLog'].forEach(id=>{
     document.getElementById(id).addEventListener('input', updateComputedPreview);
   });
+
+  // Sincronizzazione automatica Qty acquistata / venduta / rimasta:
+  // acquistata = venduta + rimasta, sempre. Modificando uno dei tre
+  // campi, un altro si ricalcola da solo per non far sballare le cifre.
+  function syncQty(changed){
+    const acqEl = document.getElementById('fQtyAcq');
+    const venEl = document.getElementById('fQtyVen');
+    const rimEl = document.getElementById('fQtyRim');
+    let acq = Number(acqEl.value) || 0;
+    let ven = Number(venEl.value) || 0;
+    let rim = Number(rimEl.value) || 0;
+
+    if(changed === 'ven'){
+      ven = Math.max(0, Math.min(ven, acq));
+      rim = acq - ven;
+      venEl.value = ven;
+      rimEl.value = rim;
+    } else if(changed === 'rim'){
+      rim = Math.max(0, Math.min(rim, acq));
+      ven = acq - rim;
+      rimEl.value = rim;
+      venEl.value = ven;
+    } else if(changed === 'acq'){
+      acq = Math.max(0, acq);
+      ven = Math.min(ven, acq);
+      rim = acq - ven;
+      acqEl.value = acq;
+      venEl.value = ven;
+      rimEl.value = rim;
+    }
+    updateComputedPreview();
+  }
+  document.getElementById('fQtyAcq').addEventListener('input', ()=> syncQty('acq'));
+  document.getElementById('fQtyVen').addEventListener('input', ()=> syncQty('ven'));
+  document.getElementById('fQtyRim').addEventListener('input', ()=> syncQty('rim'));
 
   function fitTableHeight(){
     const header = document.querySelector('header.top');
