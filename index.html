@@ -548,7 +548,16 @@
       btn.addEventListener('click', (e)=>{ e.stopPropagation(); quickDelete(Number(btn.dataset.del)); });
     });
     tbody.querySelectorAll('tr').forEach(tr=>{
-      tr.addEventListener('click', ()=> openEdit(Number(tr.dataset.id)));
+      // Apre la scheda solo per un vero click: se l'utente sta selezionando/copiando
+      // del testo (es. il titolo), il mouseup che chiude la selezione non deve aprire nulla.
+      let rowMouseDownTarget = null;
+      tr.addEventListener('mousedown', (e)=>{ rowMouseDownTarget = e.target; });
+      tr.addEventListener('click', (e)=>{
+        const sel = window.getSelection();
+        if(sel && sel.toString().length > 0) return; // c'era una selezione di testo, ignora
+        if(e.target.closest('[data-edit]') || e.target.closest('[data-del]')) return;
+        openEdit(Number(tr.dataset.id));
+      });
     });
   }
 
@@ -709,8 +718,19 @@
   document.getElementById('btnCancel').addEventListener('click', closeSheet);
   document.getElementById('btnSave').addEventListener('click', saveFromForm);
   document.getElementById('btnDelete').addEventListener('click', deleteCard);
+  // Chiude la scheda solo con un vero click sullo sfondo: mousedown e mouseup
+  // devono avvenire entrambi sullo sfondo stesso. Così, se stai selezionando del
+  // testo dentro la scheda e il trascinamento finisce fuori dai campi, non si
+  // chiude tutto perdendo quello che avevi scritto.
+  let overlayMouseDownOnBackdrop = false;
+  document.getElementById('overlay').addEventListener('mousedown', (e)=>{
+    overlayMouseDownOnBackdrop = (e.target.id === 'overlay');
+  });
   document.getElementById('overlay').addEventListener('click', (e)=>{
-    if(e.target.id === 'overlay') closeSheet();
+    const sel = window.getSelection();
+    if(sel && sel.toString().length > 0) return; // c'era una selezione di testo, ignora
+    if(e.target.id === 'overlay' && overlayMouseDownOnBackdrop) closeSheet();
+    overlayMouseDownOnBackdrop = false;
   });
   document.getElementById('btnExport').addEventListener('click', exportBackup);
   document.getElementById('btnImport').addEventListener('click', ()=> document.getElementById('fileImport').click());
