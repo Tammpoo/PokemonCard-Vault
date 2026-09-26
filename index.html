@@ -140,6 +140,16 @@
   .cards{display:grid; gap:8px;}
   .card{background:var(--surface); border:1px solid var(--line-soft); border-radius:var(--r); padding:12px 14px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; cursor:pointer; text-align:left; width:100%;}
   .card:active{background:var(--surface-2);}
+  .card .acts{grid-column:1 / -1; display:flex; justify-content:flex-end; margin-top:4px;}
+  .sell-btn{background:none; border:1px solid var(--accent); color:var(--accent); border-radius:999px; padding:5px 12px; font-weight:800; font-size:12.5px; white-space:nowrap;}
+  .sell-btn:hover{background:var(--accent-soft);}
+  .price-links{display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+  .price-links .lbl{margin-right:2px;}
+  .plink{display:inline-flex; align-items:center; gap:6px; padding:7px 12px; border-radius:999px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink); font-weight:700; font-size:12.5px; text-decoration:none;}
+  .plink.main{border-color:var(--accent); color:var(--accent);}
+  .plink svg{width:13px; height:13px;}
+  .dialog h3{margin:0; font-family:var(--f-display); font-weight:500; font-size:17px; line-height:1.3;}
+  .dialog .sub2{font-size:12.5px; color:var(--muted); margin-top:-8px;}
   .card .name{font-weight:700; font-size:14.5px; line-height:1.3;}
   .card .meta{grid-column:1; display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; font-size:12px; color:var(--muted);}
   .card .money{grid-row:1 / span 2; grid-column:2; text-align:right; display:grid; align-content:start; gap:2px;}
@@ -359,6 +369,7 @@
             <th class="r">Val./pezzo</th>
             <th class="r">Valore rimasto</th>
             <th class="r">Profitto</th>
+            <th><span class="lbl" style="position:absolute;left:-9999px">Azioni</span></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -427,6 +438,7 @@
           <div class="field"><label for="fValore">Valore attuale / pezzo (€)</label><input type="number" id="fValore" step="0.01" inputmode="decimal"></div>
         </div>
         <div class="hint" id="valoreHint"></div>
+        <div class="price-links" id="priceLinks"></div>
         <div class="field">
           <label>Vendite</label>
           <div class="sales" id="salesRows"></div>
@@ -454,6 +466,24 @@
       <button class="btn btn-primary" id="btnSave" type="button">Salva</button>
     </div>
   </div>
+</div>
+
+<div class="overlay" id="sellOverlay" hidden>
+  <form class="dialog" id="sellForm" role="dialog" aria-modal="true" aria-labelledby="sellTitle">
+    <h3 id="sellTitle">Vendi</h3>
+    <div class="sub2" id="sellSub"></div>
+    <div class="row">
+      <div class="field"><label for="sPrezzo">Incasso (€)</label><input type="number" id="sPrezzo" step="0.01" min="0" inputmode="decimal" required></div>
+      <div class="field"><label for="sData">Data</label><input type="date" id="sData" required></div>
+    </div>
+    <div class="field" id="sQtyWrap"><label for="sQty">Pezzi venduti</label><input type="number" id="sQty" step="1" min="1" inputmode="numeric"></div>
+    <div class="hint" id="sellPreview"></div>
+    <div class="price-links" id="sellLinks"></div>
+    <div class="acts">
+      <button class="btn btn-secondary" id="sellNo" type="button">Annulla</button>
+      <button class="btn btn-primary" type="submit">Registra vendita</button>
+    </div>
+  </form>
 </div>
 
 <div class="overlay" id="confirmOverlay" hidden>
@@ -787,7 +817,7 @@
     $('emptyState').hidden = n > 0 || loading;
 
     $('cardList').innerHTML = list.map(c=>`
-      <button class="card" type="button" data-open="${c.id}">
+      <div class="card" role="button" tabindex="0" data-open="${c.id}">
         <div class="name">${escapeHtml(c.nome)}</div>
         <div class="money">
           <span class="val">${c._valore > 0 ? fmt.format(c._valore) : '<span class="zero">—</span>'}</span>
@@ -802,7 +832,8 @@
           ${staleText(c)}
         </div>
         ${(c.nota || c._issues.length) ? `<div class="extra">${extraHtml(c)}</div>` : ''}
-      </button>`).join('');
+        ${c.qtyRimasta > 0 ? `<div class="acts"><button class="sell-btn" type="button" data-sell="${c.id}">Vendi</button></div>` : ''}
+      </div>`).join('');
 
     $('tbody').innerHTML = list.map(c=>`
       <tr data-open="${c.id}">
@@ -814,6 +845,7 @@
         <td class="r">${fmt.format(Number(c.valoreAttualePerCarta)||0)}</td>
         <td class="r">${c._valore > 0 ? fmt.format(c._valore) : '<span class="zero">—</span>'}</td>
         <td class="r ${cls(c._profit)}"><b>${signed(c._profit)}</b>${c._roi !== null ? `<span class="roi">${pct.format(c._roi)}</span>` : ''}</td>
+        <td>${c.qtyRimasta > 0 ? `<button class="sell-btn" type="button" data-sell="${c.id}">Vendi</button>` : ''}</td>
       </tr>`).join('');
   }
 
@@ -860,6 +892,80 @@
     el.textContent = signed(p);
     el.className = 'v ' + cls(p);
   }
+  // Link di ricerca prezzi. Cardmarket = offerte attuali in Europa (meglio per sealed e carte raw);
+  // eBay venduti = vendite concluse (meglio per le gradate). Il primo è quello consigliato per il tipo.
+  const ICON_EXT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
+  function priceLinksHtml(nome, tipo){
+    const q = encodeURIComponent((nome||'').trim());
+    if(!q) return '';
+    const cm = `<a class="plink" href="https://www.cardmarket.com/it/Pokemon/Products/Search?searchString=${q}" target="_blank" rel="noopener">Cardmarket ${ICON_EXT}</a>`;
+    const eb = `<a class="plink" href="https://www.ebay.it/sch/i.html?_nkw=${q}&LH_Sold=1&LH_Complete=1" target="_blank" rel="noopener">eBay venduti ${ICON_EXT}</a>`;
+    const [first, second] = tipo === 'G' ? [eb, cm] : [cm, eb];
+    return `<span class="lbl">Cerca prezzo</span>${first.replace('class="plink"', 'class="plink main"')}${second}`;
+  }
+  function updatePriceLinks(){
+    $('priceLinks').innerHTML = priceLinksHtml($('fNome').value, formTipo);
+  }
+
+  // Vendita rapida
+  let sellingId = null;
+  function openSell(id){
+    const c = cards.find(x=> String(x.id) === String(id));
+    if(!c) return;
+    if(readOnly){ showToast('Sola lettura: non puoi modificare'); return; }
+    sellingId = c.id;
+    const rim = Number(c.qtyRimasta)||0;
+    $('sellTitle').textContent = 'Vendi: ' + c.nome;
+    $('sellSub').textContent = `${rim} ${rim === 1 ? 'pezzo rimasto' : 'pezzi rimasti'} · valore ${fmt.format(Number(c.valoreAttualePerCarta)||0)} al pezzo`;
+    $('sPrezzo').value = '';
+    $('sData').value = today();
+    $('sQty').value = 1;
+    $('sQty').max = rim;
+    $('sQtyWrap').hidden = rim <= 1;
+    $('sellLinks').innerHTML = priceLinksHtml(c.nome, c.tipo);
+    updateSellPreview();
+    $('sellOverlay').hidden = false;
+    setTimeout(()=> $('sPrezzo').focus(), 50);
+  }
+  function closeSell(){ $('sellOverlay').hidden = true; sellingId = null; }
+  function sellQty(c){
+    return Math.max(1, Math.min(Number($('sQty').value)||1, Number(c.qtyRimasta)||0));
+  }
+  function updateSellPreview(){
+    const c = cards.find(x=> x.id === sellingId);
+    if(!c) return;
+    const prezzo = parseFloat($('sPrezzo').value);
+    const n = sellQty(c);
+    if(isNaN(prezzo)){ $('sellPreview').textContent = ''; return; }
+    const after = {...c, qtyRimasta: (Number(c.qtyRimasta)||0) - n, vendite: [...getSales(c), {data:'', prezzo}]};
+    const delta = computeProfit(after) - computeProfit(c);
+    $('sellPreview').innerHTML = `Rispetto al valore attuale: <b class="${cls(delta)}">${signed(delta)}</b>. Profitto dell'articolo dopo la vendita: <b class="${cls(computeProfit(after))}">${signed(computeProfit(after))}</b>.`;
+  }
+  function submitSell(e){
+    e.preventDefault();
+    const idx = cards.findIndex(x=> x.id === sellingId);
+    if(idx < 0) return closeSell();
+    const c = cards[idx];
+    const prezzo = parseFloat($('sPrezzo').value);
+    if(isNaN(prezzo) || prezzo < 0){ showToast('Scrivi quanto hai incassato'); $('sPrezzo').focus(); return; }
+    const n = sellQty(c);
+    const vendite = [...getSales(c), {data: $('sData').value || today(), prezzo: Math.round(prezzo*100)/100}];
+    const upd = {
+      ...c,
+      vendite,
+      venditeLog: vendite.map(v=> String(v.prezzo)).join(' + '),
+      qtyVenduta: (Number(c.qtyVenduta)||0) + n,
+      qtyRimasta: (Number(c.qtyRimasta)||0) - n,
+    };
+    upd.venditeTotali = Math.round(getVendite(upd)*100)/100;
+    upd.profitto = Math.round(computeProfit(upd)*100)/100;
+    cards[idx] = upd;
+    persistCard(upd);
+    closeSell();
+    refreshAll();
+    showToast(`Vendita registrata: ${fmt.format(prezzo)}`);
+  }
+
   function openSheet(c){
     editingId = c ? c.id : null;
     $('sheetTitle').textContent = c ? 'Modifica articolo' : 'Nuovo articolo';
@@ -868,6 +974,7 @@
     $('fNome').value = c ? (c.nome || '') : '';
     formTipo = c ? (c.tipo || 'C') : 'C';
     renderTipoSeg();
+    updatePriceLinks();
     $('fLingua').value = c ? (c.lingua || '') : '';
     $('fQtyAcq').value = c ? (c.qtyAcquistata ?? 0) : 1;
     $('fQtyVen').value = c ? (c.qtyVenduta ?? 0) : 0;
@@ -1053,6 +1160,9 @@
       $('resultsCount').scrollIntoView({behavior:'smooth', block:'start'});
       return;
     }
+    const sb = e.target.closest('[data-sell]');
+    if(sb){ openSell(sb.dataset.sell); return; }
+    if(e.target.closest('a')) return;
     const o = e.target.closest('[data-open]');
     if(!o) return;
     const sel = window.getSelection();
@@ -1064,7 +1174,13 @@
     if(!b) return;
     formTipo = b.dataset.tipo;
     renderTipoSeg();
+    updatePriceLinks();
   });
+  $('fNome').addEventListener('input', updatePriceLinks);
+  $('sellForm').addEventListener('submit', submitSell);
+  $('sellNo').addEventListener('click', closeSell);
+  ['sPrezzo','sQty'].forEach(id=> $(id).addEventListener('input', updateSellPreview));
+  $('sellOverlay').addEventListener('click', e=>{ if(e.target.id === 'sellOverlay') closeSell(); });
   $('btnAdd').addEventListener('click', ()=> openSheet(null));
   $('btnCancel').addEventListener('click', closeSheet);
   $('btnClose').addEventListener('click', closeSheet);
@@ -1079,8 +1195,14 @@
     downOnBackdrop = false;
   });
   document.addEventListener('keydown', e=>{
+    if((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('.card[data-open]')){
+      e.preventDefault();
+      openEdit(e.target.dataset.open);
+      return;
+    }
     if(e.key !== 'Escape') return;
     if(!$('confirmOverlay').hidden) $('confirmNo').click();
+    else if(!$('sellOverlay').hidden) closeSell();
     else if(!$('overlay').hidden) closeSheet();
   });
   $('btnExport').addEventListener('click', exportBackup);
