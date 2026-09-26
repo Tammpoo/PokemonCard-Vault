@@ -215,7 +215,7 @@
 <header class="top">
   <div class="brand">
     <h1>Pokémon Vault</h1>
-    <div class="sub">collezione locale</div>
+    <div class="sub" id="syncLabel">collezione locale</div>
   </div>
   <div class="stats" id="statsBar">
     <div class="stat"><div class="lbl">Articoli</div><div class="val" id="statArticoli">—</div></div>
@@ -377,6 +377,64 @@
 
   let cards = [];
   let editingId = null;
+  // Database cloud dell'Artifact (claude.ai): se disponibile i dati vivono lì,
+  // sincronizzati tra tutti i dispositivi. Altrimenti si usa il localStorage.
+  let db = null;
+  let readOnly = false;
+
+  function cardDoc(id){ return db.collection('cards').doc(String(id)); }
+
+  function cleanCard(c){
+    const out = {};
+    Object.keys(c).forEach(k=>{ if(!k.startsWith('_') && c[k] !== undefined) out[k] = c[k]; });
+    return out;
+  }
+
+  function handleDbError(e){
+    console.error('Errore database', e);
+    if(e && e.code === 'invalid_argument'){ readOnly = true; showToast('Sola lettura: non puoi modificare'); }
+    else if(e && e.code === 'quota_exceeded') showToast('Spazio del database esaurito');
+    else showToast('Errore di sincronizzazione');
+  }
+
+  // Scrive una carta (nuova o modificata) nel posto giusto.
+  function persistCard(c){
+    if(!db){ saveCards(); return; }
+    cardDoc(c.id).set(cleanCard(c)).catch(handleDbError);
+  }
+  function persistDelete(id){
+    if(!db){ saveCards(); return; }
+    cardDoc(id).delete().catch(handleDbError);
+  }
+  // Sostituisce l'intera collezione (import backup).
+  async function persistAll(newCards, oldCards){
+    if(!db){ saveCards(); return; }
+    const keep = new Set(newCards.map(c=>String(c.id)));
+    const ops = [
+      ...newCards.map(c=> ()=> cardDoc(c.id).set(cleanCard(c))),
+      ...oldCards.filter(c=> !keep.has(String(c.id))).map(c=> ()=> cardDoc(c.id).delete())
+    ];
+    for(let i=0; i<ops.length; i+=10){
+      await Promise.all(ops.slice(i, i+10).map(f=> f()));
+    }
+  }
+
+  function setSyncLabel(text){ document.getElementById('syncLabel').textContent = text; }
+
+  function startDb(){
+    let first = true;
+    setSyncLabel('sincronizzazione…');
+    db.collection('cards').onSnapshot(snap=>{
+      cards = snap.docs.map(d=> ({...d.data()})).sort((a,b)=> (a.id||0)-(b.id||0));
+      setSyncLabel('sincronizzato nel cloud');
+      populateLanguageFilter();
+      render();
+      if(first){ first = false; fitTableHeight(); }
+    }, e=>{
+      handleDbError(e);
+      setSyncLabel('sync interrotta — ricarica la pagina');
+    });
+  }
 
   function loadCards(){
     try{
@@ -632,16 +690,17 @@
     data.venditeTotali = getVendite(data);
     data.profitto = computeProfit(data);
 
+    if(readOnly){ showToast('Sola lettura: non puoi modificare'); return; }
     if(editingId === null){
       data.id = nextId();
       cards.push(data);
+      persistCard(data);
       showToast('Carta aggiunta');
     } else {
       const idx = cards.findIndex(c=>c.id === editingId);
-      if(idx > -1) cards[idx] = {...cards[idx], ...data};
+      if(idx > -1){ cards[idx] = {...cards[idx], ...data}; persistCard(cards[idx]); }
       showToast('Carta aggiornata');
     }
-    saveCards();
     populateLanguageFilter();
     render();
     closeSheet();
@@ -649,18 +708,21 @@
 
   function deleteCard(){
     if(editingId === null) return;
+    if(readOnly){ showToast('Sola lettura: non puoi modificare'); return; }
     if(!confirm('Eliminare questa carta dalla collezione?')) return;
-    cards = cards.filter(c=>c.id !== editingId);
-    saveCards();
+    const id = editingId;
+    cards = cards.filter(c=>c.id !== id);
+    persistDelete(id);
     render();
     closeSheet();
     showToast('Carta eliminata');
   }
 
   function quickDelete(id){
+    if(readOnly){ showToast('Sola lettura: non puoi modificare'); return; }
     if(!confirm('Eliminare questa carta dalla collezione?')) return;
     cards = cards.filter(c=>c.id !== id);
-    saveCards();
+    persistDelete(id);
     render();
     showToast('Carta eliminata');
   }
@@ -674,13 +736,21 @@
     toastTimer = setTimeout(()=> t.classList.remove('show'), 1800);
   }
 
-  function exportBackup(){
-    const blob = new Blob([JSON.stringify(cards, null, 2)], {type:'application/json'});
+  let downloads = null;
+  async function exportBackup(){
+    const json = JSON.stringify(cards.map(cleanCard), null, 2);
+    const date = new Date().toISOString().slice(0,10);
+    const filename = `pokemon-vault-backup-${date}.json`;
+    if(downloads){
+      try{ await downloads.save({filename, data: json}); showToast('Backup esportato'); }
+      catch(e){ if(e && e.code !== 'declined') showToast('Esportazione non riuscita'); }
+      return;
+    }
+    const blob = new Blob([json], {type:'application/json'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const date = new Date().toISOString().slice(0,10);
     a.href = url;
-    a.download = `pokemon-vault-backup-${date}.json`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -694,12 +764,16 @@
       try{
         const parsed = JSON.parse(e.target.result);
         if(!Array.isArray(parsed)) throw new Error('formato non valido');
+        if(readOnly){ showToast('Sola lettura: non puoi modificare'); return; }
         if(!confirm(`Importare ${parsed.length} carte? Questo sostituirà la collezione attuale.`)) return;
+        const old = cards;
         cards = parsed;
-        saveCards();
         populateLanguageFilter();
         render();
-        showToast('Backup importato');
+        showToast('Importazione in corso…');
+        persistAll(parsed, old)
+          .then(()=> showToast('Backup importato'))
+          .catch(handleDbError);
       }catch(err){
         alert('File non valido: ' + err.message);
       }
@@ -789,11 +863,23 @@
   window.addEventListener('resize', fitTableHeight);
   window.addEventListener('orientationchange', ()=> setTimeout(fitTableHeight, 150));
 
-  // Init
-  loadCards();
-  populateLanguageFilter();
-  render();
+  // Init: dentro claude.ai usa il database cloud, altrimenti il localStorage.
+  async function init(){
+    const claude = window.claude;
+    if(claude && typeof claude.use === 'function'){
+      setSyncLabel('connessione…');
+      claude.use('downloads').then(d=>{ downloads = d; }).catch(()=>{});
+      try{ db = await claude.use('db'); }catch(e){ db = null; }
+      if(db){ startDb(); return; }
+    }
+    loadCards();
+    setSyncLabel('collezione locale');
+    populateLanguageFilter();
+    render();
+    fitTableHeight();
+  }
   fitTableHeight();
+  init();
 })();
 </script>
 </body>
